@@ -1,0 +1,8 @@
+[Unit]
+Description=Check WiFi status and reconnect if necessary
+
+[Service]
+ExecStart=/usr/local/bin/wifi-check.sh
+
+[Install]
+WantedBy=default.target

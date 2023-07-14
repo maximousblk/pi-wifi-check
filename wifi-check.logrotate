@@ -1,0 +1,11 @@
+/var/log/wifi-check.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    create 0640 root adm
+    postrotate
+        invoke-rc.d rsyslog rotate > /dev/null
+    endscript
+}
