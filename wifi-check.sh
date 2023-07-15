@@ -1,32 +1,44 @@
 #!/bin/bash
 
-# Read configurations from environment variables, default to 0 if not set
+# Read configurations from environment variables or default to 0 if not set
 ENABLE_LOG_FILE=${ENABLE_LOG_FILE:-0}
 ENABLE_PROMETHEUS_METRIC=${ENABLE_PROMETHEUS_METRIC:-0}
 
-# Define variables
+# Define log and Prometheus metric file paths
 LOG_FILE="/var/log/wifi-check.log"
-PROMETHEUS_METRIC_FILE="/var/lib/node_exporter/wifi_check.prom" # Ensure Node Exporter is set up to use this directory
-WIFI_INTERFACE="wlan0"
-TEST_HOST="google.com" # Google's main site, used for testing the internet connectivity
+PROMETHEUS_METRIC_FILE="/var/lib/node_exporter/wifi_check.prom" 
 
-# Define a function for logging
+# Define WiFi interface and host for internet connectivity check
+WIFI_INTERFACE="wlan0"
+TEST_HOST="google.com"
+
+# Function to log messages with timestamp, writes to log file if enabled
 log() {
     local timestamp=$(date -Is)
-    local message="$timestamp $1"
+    local message="[$timestamp] $1"
     echo $message
     if [[ $ENABLE_LOG_FILE -eq 1 ]]; then
         echo $message >> $LOG_FILE
     fi
 }
 
-# Define a function for checking internet connectivity
+# Function to log Prometheus metrics, logs WiFi status and ESSID if enabled
+prom_log() {
+    local status=$1
+    local wifi_essid=$(iwgetid -r)
+    if [[ $ENABLE_PROMETHEUS_METRIC -eq 1 ]]; then
+        echo "wifi_check_status $status" > $PROMETHEUS_METRIC_FILE
+        echo "wifi_check_essid{name=\"$wifi_essid\"} $status" >> $PROMETHEUS_METRIC_FILE
+    fi
+}
+
+# Function to check internet connectivity by pinging a reliable host
 check_internet() {
     ping -c 2 $TEST_HOST > /dev/null
     return $?
 }
 
-# Define a function for waiting for a service to reach a specific state
+# Function to wait until a service reaches a specific active state
 wait_for_service() {
     local service=$1
     local state=$2
@@ -36,42 +48,34 @@ wait_for_service() {
     done
 }
 
-# Start the script
-log 'WiFi check started'
+# Start the WiFi check
+log 'Starting WiFi check...'
 
-# Check if the WiFi interface exists
+# Check the existence of the WiFi interface and manage connectivity
 if [ -d "/sys/class/net/$WIFI_INTERFACE" ]; then
-    # Check if we have internet access
+    # If internet access is not available, restart NetworkManager service
     if ! check_internet; then
-        log "No internet access on $WIFI_INTERFACE, trying to reconnect"
-        # Take the WiFi interface down
-        sudo systemctl stop NetworkManager.service
-        wait_for_service NetworkManager inactive
-        # Bring the WiFi interface back up
-        sudo systemctl start NetworkManager.service
+        log "Status: No internet access on interface $WIFI_INTERFACE. Initiating NetworkManager.service restart..."
+        log "Action: Restarting NetworkManager.service..."
+        sudo systemctl restart NetworkManager.service
         wait_for_service NetworkManager active
     fi
-    # Give it some time to establish connection
+    # Wait to allow the connection to establish
     sleep 5
 
-    # Log the final status and update Prometheus metric
+    # Log final status of internet access and log Prometheus metrics
     if check_internet; then
-        log "Internet access available on $WIFI_INTERFACE"
-        if [[ $ENABLE_PROMETHEUS_METRIC -eq 1 ]]; then
-            echo "wifi_check_status 1" > $PROMETHEUS_METRIC_FILE
-        fi
+        log "Status: Internet access is now available on interface $WIFI_INTERFACE."
+        prom_log 1
     else
-        log "Still no internet access on $WIFI_INTERFACE after attempt to reconnect"
-        if [[ $ENABLE_PROMETHEUS_METRIC -eq 1 ]]; then
-            echo "wifi_check_status 0" > $PROMETHEUS_METRIC_FILE
-        fi
+        log "Status: Unable to establish internet access on interface $WIFI_INTERFACE despite NetworkManager.service restart."
+        prom_log 0
     fi
 else
-    log "WiFi interface $WIFI_INTERFACE not found"
-    if [[ $ENABLE_PROMETHEUS_METRIC -eq 1 ]]; then
-        echo "wifi_check_status 0" > $PROMETHEUS_METRIC_FILE
-    fi
+    # If WiFi interface is not found, log the status and update Prometheus metrics
+    log "Status: WiFi interface $WIFI_INTERFACE was not found."
+    prom_log 0
 fi
 
-# Finish the script
-log 'WiFi check finished'
+# Finish the WiFi check
+log 'WiFi check completed.'
