@@ -6,7 +6,7 @@ ENABLE_PROMETHEUS_METRIC=${ENABLE_PROMETHEUS_METRIC:-0}
 
 # Define log and Prometheus metric file paths
 LOG_FILE="/var/log/wifi-check.log"
-PROMETHEUS_METRIC_FILE="/var/lib/node_exporter/wifi_check.prom" 
+PROMETHEUS_METRIC_FILE="/var/lib/node_exporter/wifi_check.prom"
 
 # Define WiFi interface and host for internet connectivity check
 WIFI_INTERFACE="wlan0"
@@ -18,7 +18,7 @@ log() {
     local message="[$timestamp] $1"
     echo $message
     if [[ $ENABLE_LOG_FILE -eq 1 ]]; then
-        echo $message >> $LOG_FILE
+        echo $message >>$LOG_FILE
     fi
 }
 
@@ -27,15 +27,22 @@ prom_log() {
     local status=$1
     local wifi_essid=$(iwgetid -r)
     if [[ $ENABLE_PROMETHEUS_METRIC -eq 1 ]]; then
-        echo "wifi_check_status $status" > $PROMETHEUS_METRIC_FILE
-        echo "wifi_check_essid{name=\"$wifi_essid\"} $status" >> $PROMETHEUS_METRIC_FILE
+        echo "wifi_check_status $status" >$PROMETHEUS_METRIC_FILE
+        echo "wifi_check_essid{name=\"$wifi_essid\"} $status" >>$PROMETHEUS_METRIC_FILE
     fi
 }
 
-# Function to check internet connectivity by pinging a reliable host
-check_internet() {
-    ping -c 2 $TEST_HOST > /dev/null
-    return $?
+# Function to check internet connectivity by pinging a reliable host with retry
+check_internet_retry() {
+    local retries=5
+    for i in $(seq 1 $retries); do
+        if ping -c 2 $TEST_HOST >/dev/null; then
+            return 0
+        fi
+        log "Internet check failed. Retry $i of $retries..."
+        sleep 5
+    done
+    return 1
 }
 
 # Function to wait until a service reaches a specific active state
@@ -48,23 +55,37 @@ wait_for_service() {
     done
 }
 
+# Function to check if the WiFi interface is up
+is_wifi_interface_up() {
+    ip link show $WIFI_INTERFACE | grep -q 'state UP'
+    return $?
+}
+
 # Start the WiFi check
 log 'Starting WiFi check...'
 
 # Check the existence of the WiFi interface and manage connectivity
-if [ -d "/sys/class/net/$WIFI_INTERFACE" ]; then
+if is_wifi_interface_up; then
     # If internet access is not available, restart NetworkManager service
-    if ! check_internet; then
+    if !check_internet_retry; then
         log "Status: No internet access on interface $WIFI_INTERFACE. Initiating NetworkManager.service restart..."
+        # Turn WiFi interface off
+        log "Action: Turning $WIFI_INTERFACE off..."
+        sudo ip link set $WIFI_INTERFACE down
+
+        # Restart NetworkManager service
         log "Action: Restarting NetworkManager.service..."
         sudo systemctl restart NetworkManager.service
         wait_for_service NetworkManager active
+
+        # Turn WiFi interface on
+        sudo ip link set $WIFI_INTERFACE up
     fi
     # Wait to allow the connection to establish
     sleep 5
 
     # Log final status of internet access and log Prometheus metrics
-    if check_internet; then
+    if check_internet_retry; then
         log "Status: Internet access is now available on interface $WIFI_INTERFACE."
         prom_log 1
     else
